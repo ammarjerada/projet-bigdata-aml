@@ -1,7 +1,6 @@
 name: bigdata
 
 services:
-
   # ===== Machine ELK-01 : premier nœud Elasticsearch =====
   es01:
     image: docker.elastic.co/elasticsearch/elasticsearch:9.4.3
@@ -10,63 +9,81 @@ services:
     environment:
       - node.name=es01
       - cluster.name=bitcoin-aml-cluster
-      - discovery.seed_hosts=es02                   # NOUVEAU : son collègue à appeler
-      - cluster.initial_master_nodes=es01,es02      # NOUVEAU : qui vote au 1er démarrage
+      - discovery.seed_hosts=es02
+      - cluster.initial_master_nodes=es01,es02
       - xpack.security.enabled=false
       - ES_JAVA_OPTS=-Xms1g -Xmx1g
     mem_limit: 2g
     ports:
-      - "9200:9200"                                 # es01 joignable depuis Windows sur 9200
+      - "9200:9200"
     volumes:
       - es01-data:/usr/share/elasticsearch/data
     networks:
       bigdata-net:
         ipv4_address: 172.20.0.11
 
-  # ===== Machine ELK-02 : deuxième nœud Elasticsearch (NOUVEAU) =====
+  # ===== Machine ELK-02 : deuxième nœud Elasticsearch =====
   es02:
-    image: docker.elastic.co/elasticsearch/elasticsearch:9.4.3   # même recette, même version
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.4.3
     container_name: es02
     hostname: es02
     environment:
-      - node.name=es02                              # nom différent
-      - cluster.name=bitcoin-aml-cluster            # MÊME cluster → même équipe
-      - discovery.seed_hosts=es01                   # son collègue à appeler
+      - node.name=es02
+      - cluster.name=bitcoin-aml-cluster
+      - discovery.seed_hosts=es01
       - cluster.initial_master_nodes=es01,es02
       - xpack.security.enabled=false
       - ES_JAVA_OPTS=-Xms1g -Xmx1g
     mem_limit: 2g
     ports:
-      - "9201:9200"                                 # es02 joignable depuis Windows sur 9201
+      - "9201:9200"
     volumes:
-      - es02-data:/usr/share/elasticsearch/data     # son propre coffre-fort
+      - es02-data:/usr/share/elasticsearch/data
     networks:
       bigdata-net:
         ipv4_address: 172.20.0.12
 
-
   # ===== Kibana (fait partie de la machine ELK-01) =====
   kibana:
-    image: docker.elastic.co/kibana/kibana:9.4.3          # MÊME version qu'Elasticsearch
+    image: docker.elastic.co/kibana/kibana:9.4.3
     container_name: kibana
     hostname: kibana
     environment:
       - SERVER_NAME=kibana
-      - 'ELASTICSEARCH_HOSTS=["http://es01:9200","http://es02:9200"]'   # où trouver le cluster
-    mem_limit: 1536m                                      # 1,5 Go maximum
+      - 'ELASTICSEARCH_HOSTS=["http://es01:9200","http://es02:9200"]'
+    mem_limit: 1536m
     ports:
-      - "5601:5601"                                       # Kibana joignable sur la porte 5601
-    depends_on:                                           # démarrer APRÈS les deux nœuds
+      - "5601:5601"
+    depends_on:
       - es01
       - es02
     networks:
       bigdata-net:
         ipv4_address: 172.20.0.13
-        
+
+  # ===== Machine SPARK-01 =====
+  spark01:
+    image: apache/spark:4.0.2-scala2.13-java17-python3-ubuntu
+    container_name: spark01
+    hostname: spark01
+    user: root # évite les problèmes de droits sur les dossiers partagés
+    command: ["tail", "-f", "/dev/null"] # garde la boîte allumée, en attente de travail
+    mem_limit: 2g
+    ports:
+      - "4040:4040" # interface web de Spark pendant un traitement
+    volumes:
+      - ./data:/opt/data # dossier data du PC → visible dans la boîte
+      - ./spark:/opt/spark-apps # dossier spark du PC → visible dans la boîte
+    networks:
+      bigdata-net:
+        ipv4_address: 172.20.0.21
+
+# ========== LES COFFRES-FORTS ==========
 volumes:
   es01-data:
-  es02-data:                                        # NOUVEAU
+  es02-data:
 
+# ========== LE RÉSEAU ==========
 networks:
   bigdata-net:
     driver: bridge
