@@ -1,0 +1,75 @@
+name: bigdata
+
+services:
+
+  # ===== Machine ELK-01 : premier nœud Elasticsearch =====
+  es01:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.4.3
+    container_name: es01
+    hostname: es01
+    environment:
+      - node.name=es01
+      - cluster.name=bitcoin-aml-cluster
+      - discovery.seed_hosts=es02                   # NOUVEAU : son collègue à appeler
+      - cluster.initial_master_nodes=es01,es02      # NOUVEAU : qui vote au 1er démarrage
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    mem_limit: 2g
+    ports:
+      - "9200:9200"                                 # es01 joignable depuis Windows sur 9200
+    volumes:
+      - es01-data:/usr/share/elasticsearch/data
+    networks:
+      bigdata-net:
+        ipv4_address: 172.20.0.11
+
+  # ===== Machine ELK-02 : deuxième nœud Elasticsearch (NOUVEAU) =====
+  es02:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.4.3   # même recette, même version
+    container_name: es02
+    hostname: es02
+    environment:
+      - node.name=es02                              # nom différent
+      - cluster.name=bitcoin-aml-cluster            # MÊME cluster → même équipe
+      - discovery.seed_hosts=es01                   # son collègue à appeler
+      - cluster.initial_master_nodes=es01,es02
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    mem_limit: 2g
+    ports:
+      - "9201:9200"                                 # es02 joignable depuis Windows sur 9201
+    volumes:
+      - es02-data:/usr/share/elasticsearch/data     # son propre coffre-fort
+    networks:
+      bigdata-net:
+        ipv4_address: 172.20.0.12
+
+
+  # ===== Kibana (fait partie de la machine ELK-01) =====
+  kibana:
+    image: docker.elastic.co/kibana/kibana:9.4.3          # MÊME version qu'Elasticsearch
+    container_name: kibana
+    hostname: kibana
+    environment:
+      - SERVER_NAME=kibana
+      - 'ELASTICSEARCH_HOSTS=["http://es01:9200","http://es02:9200"]'   # où trouver le cluster
+    mem_limit: 1536m                                      # 1,5 Go maximum
+    ports:
+      - "5601:5601"                                       # Kibana joignable sur la porte 5601
+    depends_on:                                           # démarrer APRÈS les deux nœuds
+      - es01
+      - es02
+    networks:
+      bigdata-net:
+        ipv4_address: 172.20.0.13
+        
+volumes:
+  es01-data:
+  es02-data:                                        # NOUVEAU
+
+networks:
+  bigdata-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24

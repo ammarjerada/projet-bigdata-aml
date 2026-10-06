@@ -1,0 +1,144 @@
+# =====================================================================
+# Projet Big Data ENSIASD — Plateforme anti-blanchiment Bitcoin
+# Première manipulation Elasticsearch (TP Jalon 1, étape 5)
+# À exécuter dans Kibana → Dev Tools, commande par commande, dans l'ordre
+# =====================================================================
+
+
+# ---------- 0. Vérifier le cluster avant de commencer ----------
+
+# Santé du cluster (attendu : status green, number_of_nodes 2)
+GET _cluster/health?pretty
+
+# Liste des nœuds (attendu : es01 et es02, l'étoile * = le chef)
+GET _cat/nodes?v
+
+
+# ---------- 1. (Optionnel) Repartir de zéro ----------
+# ⚠️ Supprime l'index et toutes ses données. À utiliser seulement pour tout refaire.
+# DELETE btc-transactions
+
+
+# ---------- 2. Créer l'index et définir sa structure (mapping) ----------
+# keyword = valeur exacte (adresses, identifiants) ; double = nombre à virgule ;
+# long = nombre entier ; date = date
+PUT btc-transactions
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 1
+  },
+  "mappings": {
+    "properties": {
+      "tx_hash":             { "type": "keyword" },
+      "date":                { "type": "date" },
+      "adresse_source":      { "type": "keyword" },
+      "adresse_destination": { "type": "keyword" },
+      "montant_btc":         { "type": "double" },
+      "frais_btc":           { "type": "double" },
+      "bloc":                { "type": "long" },
+      "label_destination":   { "type": "keyword" }
+    }
+  }
+}
+
+# Vérifier la structure
+GET btc-transactions/_mapping
+
+
+# ---------- 3. Insérer les 8 transactions (scénario collecteur) ----------
+# 5 adresses envoient vers bc1qrelais99 vers 3h du matin,
+# qui renvoie presque tout vers un échangeur 6 minutes plus tard.
+# + 2 transactions normales en journée. Données fictives (prototype).
+POST btc-transactions/_bulk?refresh=true
+{"index":{"_id":"tx001"}}
+{"tx_hash":"tx001","date":"2026-10-05T03:02:11Z","adresse_source":"bc1qsrc01","adresse_destination":"bc1qrelais99","montant_btc":0.42,"frais_btc":0.00002,"bloc":960101,"label_destination":"inconnu"}
+{"index":{"_id":"tx002"}}
+{"tx_hash":"tx002","date":"2026-10-05T03:04:40Z","adresse_source":"bc1qsrc02","adresse_destination":"bc1qrelais99","montant_btc":0.37,"frais_btc":0.00002,"bloc":960101,"label_destination":"inconnu"}
+{"index":{"_id":"tx003"}}
+{"tx_hash":"tx003","date":"2026-10-05T03:05:02Z","adresse_source":"bc1qsrc03","adresse_destination":"bc1qrelais99","montant_btc":0.51,"frais_btc":0.00003,"bloc":960101,"label_destination":"inconnu"}
+{"index":{"_id":"tx004"}}
+{"tx_hash":"tx004","date":"2026-10-05T03:06:55Z","adresse_source":"bc1qsrc04","adresse_destination":"bc1qrelais99","montant_btc":0.29,"frais_btc":0.00002,"bloc":960102,"label_destination":"inconnu"}
+{"index":{"_id":"tx005"}}
+{"tx_hash":"tx005","date":"2026-10-05T03:07:30Z","adresse_source":"bc1qsrc05","adresse_destination":"bc1qrelais99","montant_btc":0.44,"frais_btc":0.00002,"bloc":960102,"label_destination":"inconnu"}
+{"index":{"_id":"tx006"}}
+{"tx_hash":"tx006","date":"2026-10-05T03:13:10Z","adresse_source":"bc1qrelais99","adresse_destination":"bc1qexchange7","montant_btc":2.0298,"frais_btc":0.0002,"bloc":960102,"label_destination":"echangeur"}
+{"index":{"_id":"tx007"}}
+{"tx_hash":"tx007","date":"2026-10-05T14:20:00Z","adresse_source":"bc1qclient42","adresse_destination":"bc1qmarchand3","montant_btc":0.015,"frais_btc":0.00001,"bloc":960168,"label_destination":"commercant"}
+{"index":{"_id":"tx008"}}
+{"tx_hash":"tx008","date":"2026-10-05T16:45:30Z","adresse_source":"bc1qami88","adresse_destination":"bc1qami12","montant_btc":0.08,"frais_btc":0.00001,"bloc":960182,"label_destination":"inconnu"}
+
+
+# ---------- 4. Vérifier la présence des données ----------
+
+# Nombre de documents (attendu : 8)
+GET btc-transactions/_count
+
+# Répartition sur le cluster (attendu : p sur un nœud, r sur l'autre)
+GET _cat/shards/btc-transactions?v
+
+# Récupérer une transaction précise (attendu : found true)
+GET btc-transactions/_doc/tx006
+
+
+# ---------- 5. Recherches ----------
+
+# 5.1 Qui a envoyé de l'argent au relais ? (attendu : 5 résultats)
+GET btc-transactions/_search
+{
+  "query": {
+    "term": { "adresse_destination": "bc1qrelais99" }
+  }
+}
+
+# 5.2 Gros montants, 1 BTC ou plus (attendu : 1 résultat, tx006)
+GET btc-transactions/_search
+{
+  "query": {
+    "range": { "montant_btc": { "gte": 1 } }
+  }
+}
+
+# 5.3 Profil complet d'une adresse, par ordre chronologique
+# (attendu : 6 résultats, 5 entrées entre 03:02 et 03:07 puis 1 sortie à 03:13)
+GET btc-transactions/_search
+{
+  "query": {
+    "bool": {
+      "should": [
+        { "term": { "adresse_source": "bc1qrelais99" } },
+        { "term": { "adresse_destination": "bc1qrelais99" } }
+      ]
+    }
+  },
+  "sort": [ { "date": "asc" } ]
+}
+
+
+# ---------- 6. Agrégation : détecter le collecteur automatiquement ----------
+# Regroupe par adresse de destination, avec le total reçu et le nombre de sources
+# (attendu en tête : bc1qrelais99, 5 transactions, ~2.03 BTC, 5 sources)
+GET btc-transactions/_search
+{
+  "size": 0,
+  "aggs": {
+    "par_destination": {
+      "terms": { "field": "adresse_destination" },
+      "aggs": {
+        "total_recu": { "sum": { "field": "montant_btc" } },
+        "nb_sources": { "cardinality": { "field": "adresse_source" } }
+      }
+    }
+  }
+}
+
+
+# ---------- 7. Preuve du type keyword ----------
+# Chercher un morceau d'adresse ne renvoie rien (attendu : 0 résultat),
+# car keyword impose la correspondance exacte
+GET btc-transactions/_search
+{
+  "query": {
+    "term": { "adresse_destination": "relais" }
+  }
+}
